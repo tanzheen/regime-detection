@@ -1,0 +1,35 @@
+[features]
+vol_windows = [5]
+momentum_windows = []
+volume_zscore_window = 20
+include_hl_range = true
+
+[hmm]
+n_states = 3
+features = ["log_ret", "vol_zscore"]
+standardize = true
+max_iter = 200
+tol = 0.000001
+random_state = 42
+min_variance = 0.00000001
+verbose = false
+stay_probability = 0.90
+transition_prior_weight = 10.0
+save_fold_models = false
+train_final_model = true
+
+[wasserstein]
+k = 3
+h1 = 5
+h2 = 4
+features = ["log_ret", "vol_zscore"]
+standardize = true
+methods = ["full", "sliced"]
+final_method = "sliced"
+save_fold_models = false
+train_final_model = true
+p = 1
+max_iter = 50
+tol = 0.0000001
+random_state = 42
+n_projections = 50
