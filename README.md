@@ -25,6 +25,10 @@ commands that reference existing modules.
 .
 |-- config/
 |   `-- regime_features.toml
+|-- api/
+|   `-- pipeline/
+|       |-- app.py
+|       `-- regime_pipeline.py
 |-- data/
 |   |-- inputs/
 |   |   |-- spy500.parquet
@@ -382,6 +386,199 @@ with model_path.open("rb") as f:
 model = artifact["model"]
 feature_columns = artifact["feature_columns"]
 ```
+
+## FastAPI Regime API
+
+The API in `api/pipeline` serves the selected production-style model:
+
+```text
+log_ret + vol_zscore + sliced Wasserstein K-means
+```
+
+It loads:
+
+```text
+data/outputs/wasterstein/log_ret_vol_zscore/sliced/models/wkmeans_final.pkl
+```
+
+Run the service:
+
+```bash
+uv run uvicorn api.pipeline.app:app --host 127.0.0.1 --port 8000
+```
+
+Interactive docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Endpoints:
+
+```text
+GET  /health
+GET  /metadata
+POST /predict/latest
+POST /predict
+```
+
+The model requires daily bars with:
+
+```text
+date
+adjClose
+adjVolume
+```
+
+Send at least 25 recent bars so the 20-day `vol_zscore` and the 5-day
+Wasserstein segment can be calculated. Extra OHLCV fields are accepted and
+ignored.
+
+Example request:
+
+```json
+{
+  "include_features": true,
+  "records": [
+    {
+      "date": "2026-05-18",
+      "adjClose": 738.65,
+      "adjVolume": 47843865
+    },
+    {
+      "date": "2026-05-19",
+      "adjClose": 733.73,
+      "adjVolume": 54255913
+    }
+  ]
+}
+```
+
+The example above is shortened for readability. A real prediction request
+should include 25 or more bars.
+
+Example latest-regime response:
+
+```json
+{
+  "result": {
+    "date": "2026-05-22",
+    "adjClose": 745.64,
+    "regime": 0.0,
+    "regime_name": "low_volatility",
+    "risk_on_low_medium": true,
+    "risk_on_low_only": true,
+    "high_volatility": false,
+    "log_ret": 0.003923786914972638,
+    "vol_zscore": -0.7103601858936398
+  }
+}
+```
+
+Response fields:
+
+- `regime`: numeric volatility regime, where `0 = low`, `1 = medium`, and
+  `2 = high`.
+- `regime_name`: human-readable regime label.
+- `risk_on_low_medium`: `true` when the regime is low or medium volatility.
+- `risk_on_low_only`: `true` only when the regime is low volatility.
+- `high_volatility`: `true` only when the regime is high volatility.
+- `log_ret` and `vol_zscore`: unscaled features, returned only when
+  `include_features` is `true`.
+
+Recommended use of this API output:
+
+- Use `switch_low_vs_medium_high` with the `log_ret_vol_zscore_sliced` model.
+- In implementation terms, be long only when `regime == 0` or
+  `risk_on_low_only == true`.
+- Exit or stay flat when `regime` switches to `1` or `2`.
+- This recommendation is based on the last two validation folds, where this
+  rule had the highest Sharpe ratio among the tested rules.
+
+You can also use the pipeline directly from Python:
+
+```python
+import pandas as pd
+from api.pipeline import SlicedWassersteinRegimePipeline
+
+prices = pd.read_parquet("data/inputs/spy500.parquet").tail(60)
+pipeline = SlicedWassersteinRegimePipeline()
+latest = pipeline.predict_latest(prices)
+print(latest)
+```
+
+Or via CLI:
+
+```bash
+uv run python -m api.pipeline.regime_pipeline \
+  --input data/inputs/spy500.parquet \
+  --latest
+```
+
+## Backtest Results
+
+The backtests use walk-forward validation predictions, not the final full-data
+model. Signals are calculated at the close and applied to the next bar's
+return. Annual average return is the mean daily strategy return multiplied by
+252. Sharpe uses a zero risk-free rate.
+
+Full report files:
+
+```text
+data/outputs/backtests/trend_following_wasterstein/report.md
+data/outputs/backtests/trend_following_wasterstein_last2/report.md
+```
+
+Strategy definitions:
+
+- `buy_hold`: buy and hold SPY over the same validation dates.
+- `ma_only`: 10-day/30-day SMA crossover with no regime filter.
+- `allow_low_medium`: 10-day/30-day SMA crossover; allow long exposure only in
+  low or medium volatility.
+- `allow_low_only`: 10-day/30-day SMA crossover; allow long exposure only in
+  low volatility.
+- `switch_low_vs_medium_high`: regime-switch strategy; long in low volatility
+  and flat in medium or high volatility.
+- `switch_low_medium_vs_high`: regime-switch strategy; long in low or medium
+  volatility and flat in high volatility.
+
+### Last Two Validation Folds
+
+These are the most recent validation folds, `4` and `5`.
+
+| Strategy | Version | Annual Avg Return | Sharpe | CAGR | Max Drawdown | Exposure |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| buy_hold | SPY | 14.70% | 0.828 | 14.02% | -33.70% | 100.0% |
+| ma_only | no regime filter | 8.63% | 0.789 | 8.36% | -17.67% | 68.6% |
+| allow_low_medium | log_ret_vol_zscore_sliced | 8.33% | 0.833 | 8.14% | -17.01% | 62.8% |
+| allow_low_only | log_ret_vol_zscore_sliced | 5.72% | 0.716 | 5.55% | -16.80% | 39.7% |
+| switch_low_vs_medium_high | log_ret_vol_zscore_sliced | 10.67% | 1.018 | 10.65% | -21.89% | 53.5% |
+| switch_low_medium_vs_high | log_ret_vol_zscore_sliced | 12.89% | 0.926 | 12.66% | -27.69% | 87.5% |
+
+Recent-fold takeaway: buy-and-hold had the highest return, while the sliced
+`log_ret + vol_zscore` `switch_low_vs_medium_high` rule had the highest Sharpe
+ratio. The API model is the regime model behind the sliced rows.
+
+Recommendation: use `switch_low_vs_medium_high` with
+`log_ret_vol_zscore_sliced` as the default regime rule. It is the cleanest
+risk-adjusted result in the most recent validation folds: long during
+low-volatility regimes, flat during medium- or high-volatility regimes.
+
+### All Validation Folds
+
+This covers all five walk-forward validation folds.
+
+| Strategy | Version | Annual Avg Return | Sharpe | CAGR | Max Drawdown | Exposure |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| buy_hold | SPY | 10.67% | 0.549 | 9.17% | -55.20% | 100.0% |
+| ma_only | no regime filter | 5.61% | 0.485 | 5.06% | -33.73% | 64.7% |
+| allow_low_medium | log_ret_vol_zscore_sliced | 4.65% | 0.433 | 4.16% | -45.79% | 60.1% |
+| allow_low_only | log_ret_vol_zscore_sliced | 3.04% | 0.355 | 2.71% | -32.46% | 37.4% |
+| switch_low_vs_medium_high | log_ret_vol_zscore_sliced | 5.73% | 0.480 | 5.15% | -36.39% | 50.7% |
+| switch_low_medium_vs_high | log_ret_vol_zscore_sliced | 7.41% | 0.473 | 6.37% | -61.56% | 86.4% |
+
+All-fold takeaway: buy-and-hold won on return and Sharpe, but the regime model
+can reduce exposure and, depending on the rule, reduce drawdown.
 
 ## Development Notes
 
