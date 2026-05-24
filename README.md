@@ -541,6 +541,10 @@ Strategy definitions:
   and flat in medium or high volatility.
 - `switch_low_medium_vs_high`: regime-switch strategy; long in low or medium
   volatility and flat in high volatility.
+- `switch_low_short_high`: regime-switch strategy; long in low volatility,
+  flat in medium volatility, and short in high volatility.
+- `switch_low_medium_short_high`: regime-switch strategy; long in low or
+  medium volatility and short in high volatility.
 
 ### Last Two Validation Folds
 
@@ -553,7 +557,9 @@ These are the most recent validation folds, `4` and `5`.
 | allow_low_medium | log_ret_vol_zscore_sliced | 8.33% | 0.833 | 8.14% | -17.01% | 62.8% |
 | allow_low_only | log_ret_vol_zscore_sliced | 5.72% | 0.716 | 5.55% | -16.80% | 39.7% |
 | switch_low_vs_medium_high | log_ret_vol_zscore_sliced | 10.67% | 1.018 | 10.65% | -21.89% | 53.5% |
+| switch_low_short_high | log_ret_vol_zscore_sliced | 9.02% | 0.593 | 8.18% | -23.88% | 65.1% gross |
 | switch_low_medium_vs_high | log_ret_vol_zscore_sliced | 12.89% | 0.926 | 12.66% | -27.69% | 87.5% |
+| switch_low_medium_short_high | log_ret_vol_zscore_sliced | 11.23% | 0.633 | 10.14% | -35.84% | 99.1% gross |
 
 Recent-fold takeaway: buy-and-hold had the highest return, while the sliced
 `log_ret + vol_zscore` `switch_low_vs_medium_high` rule had the highest Sharpe
@@ -563,6 +569,8 @@ Recommendation: use `switch_low_vs_medium_high` with
 `log_ret_vol_zscore_sliced` as the default regime rule. It is the cleanest
 risk-adjusted result in the most recent validation folds: long during
 low-volatility regimes, flat during medium- or high-volatility regimes.
+Shorting high-volatility regimes was tested, but it reduced Sharpe and increased
+drawdown versus staying flat in high volatility.
 
 ### All Validation Folds
 
@@ -575,7 +583,9 @@ This covers all five walk-forward validation folds.
 | allow_low_medium | log_ret_vol_zscore_sliced | 4.65% | 0.433 | 4.16% | -45.79% | 60.1% |
 | allow_low_only | log_ret_vol_zscore_sliced | 3.04% | 0.355 | 2.71% | -32.46% | 37.4% |
 | switch_low_vs_medium_high | log_ret_vol_zscore_sliced | 5.73% | 0.480 | 5.15% | -36.39% | 50.7% |
+| switch_low_short_high | log_ret_vol_zscore_sliced | 2.37% | 0.144 | 1.02% | -63.83% | 64.0% gross |
 | switch_low_medium_vs_high | log_ret_vol_zscore_sliced | 7.41% | 0.473 | 6.37% | -61.56% | 86.4% |
+| switch_low_medium_short_high | log_ret_vol_zscore_sliced | 4.04% | 0.209 | 2.20% | -81.16% | 99.7% gross |
 
 All-fold takeaway: buy-and-hold won on return and Sharpe, but the regime model
 can reduce exposure and, depending on the rule, reduce drawdown.

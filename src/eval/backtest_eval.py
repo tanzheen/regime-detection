@@ -30,6 +30,7 @@ class StrategySpec:
     name: str
     description: str
     allowed_regimes: frozenset[int] | None
+    short_regimes: frozenset[int] | None = None
     signal_type: str = "ma_filter"
 
 
@@ -71,6 +72,16 @@ STRATEGIES = [
         signal_type="regime_switch",
     ),
     StrategySpec(
+        name="switch_low_short_high",
+        description=(
+            "Regime-switch strategy: long in low volatility, flat in medium "
+            "volatility, and short in high volatility."
+        ),
+        allowed_regimes=frozenset({0}),
+        short_regimes=frozenset({2}),
+        signal_type="regime_long_short",
+    ),
+    StrategySpec(
         name="switch_low_medium_vs_high",
         description=(
             "Regime-switch strategy: long in low or medium volatility and "
@@ -78,6 +89,16 @@ STRATEGIES = [
         ),
         allowed_regimes=frozenset({0, 1}),
         signal_type="regime_switch",
+    ),
+    StrategySpec(
+        name="switch_low_medium_short_high",
+        description=(
+            "Regime-switch strategy: long in low or medium volatility and "
+            "short in high volatility."
+        ),
+        allowed_regimes=frozenset({0, 1}),
+        short_regimes=frozenset({2}),
+        signal_type="regime_long_short",
     ),
 ]
 
@@ -181,7 +202,8 @@ def main() -> None:
                     "sharpe",
                     "cagr",
                     "max_drawdown",
-                    "exposure",
+                    "gross_exposure",
+                    "net_exposure",
                     "entries",
                 ]
             ]
@@ -370,6 +392,8 @@ def run_strategy(frame: pd.DataFrame, strategy: StrategySpec) -> pd.DataFrame:
         return run_ma_filter_strategy(frame, strategy)
     if strategy.signal_type == "regime_switch":
         return run_regime_switch_strategy(frame, strategy)
+    if strategy.signal_type == "regime_long_short":
+        return run_regime_long_short_strategy(frame, strategy)
     raise ValueError(f"Unsupported strategy signal_type: {strategy.signal_type}")
 
 
@@ -380,6 +404,7 @@ def run_buy_hold_strategy(frame: pd.DataFrame) -> pd.DataFrame:
     result["strategy_return"] = result["asset_return"]
     result["equity"] = (1.0 + result["strategy_return"]).cumprod()
     result["entries"] = 1
+    result["short_entries"] = 0
     result["ma_exits"] = 0
     result["regime_exits"] = 0
     result["blocked_entries"] = 0
@@ -432,6 +457,7 @@ def run_ma_filter_strategy(frame: pd.DataFrame, strategy: StrategySpec) -> pd.Da
     result["strategy_return"] = result["position"] * result["asset_return"]
     result["equity"] = (1.0 + result["strategy_return"]).cumprod()
     result["entries"] = entries
+    result["short_entries"] = 0
     result["ma_exits"] = ma_exits
     result["regime_exits"] = regime_exits
     result["blocked_entries"] = blocked_entries
@@ -468,6 +494,54 @@ def run_regime_switch_strategy(
     result["strategy_return"] = result["position"] * result["asset_return"]
     result["equity"] = (1.0 + result["strategy_return"]).cumprod()
     result["entries"] = entries
+    result["short_entries"] = 0
+    result["ma_exits"] = 0
+    result["regime_exits"] = regime_exits
+    result["blocked_entries"] = 0
+    return result
+
+
+def run_regime_long_short_strategy(
+    frame: pd.DataFrame,
+    strategy: StrategySpec,
+) -> pd.DataFrame:
+    if strategy.allowed_regimes is None or strategy.short_regimes is None:
+        raise ValueError("Long/short regime strategies require long and short regimes")
+
+    positions_after_signal: list[int] = []
+    position = 0
+    entries = 0
+    short_entries = 0
+    regime_exits = 0
+
+    for row in frame.itertuples(index=False):
+        if pd.notna(row.regime):
+            regime = int(row.regime)
+            if regime in strategy.allowed_regimes:
+                target_position = 1
+            elif regime in strategy.short_regimes:
+                target_position = -1
+            else:
+                target_position = 0
+
+            if position != target_position:
+                if position != 0:
+                    regime_exits += 1
+                if target_position == 1:
+                    entries += 1
+                elif target_position == -1:
+                    short_entries += 1
+                position = target_position
+
+        positions_after_signal.append(position)
+
+    result = frame.copy()
+    result["position_after_signal"] = positions_after_signal
+    result["position"] = result["position_after_signal"].shift(1).fillna(0).astype(int)
+    result["strategy_return"] = result["position"] * result["asset_return"]
+    result["equity"] = (1.0 + result["strategy_return"]).cumprod()
+    result["entries"] = entries
+    result["short_entries"] = short_entries
     result["ma_exits"] = 0
     result["regime_exits"] = regime_exits
     result["blocked_entries"] = 0
@@ -512,7 +586,10 @@ def summarize_returns(
         "annual_volatility": annual_volatility,
         "max_drawdown": float(drawdown.min()),
         "exposure": float(result["position"].mean()),
+        "net_exposure": float(result["position"].mean()),
+        "gross_exposure": float(result["position"].abs().mean()),
         "entries": int(result["entries"].iloc[0]) if len(result) else 0,
+        "short_entries": int(result["short_entries"].iloc[0]) if len(result) else 0,
         "ma_exits": int(result["ma_exits"].iloc[0]) if len(result) else 0,
         "regime_exits": int(result["regime_exits"].iloc[0]) if len(result) else 0,
         "blocked_entries": (
@@ -538,8 +615,10 @@ def write_report(
         "cagr",
         "total_return",
         "max_drawdown",
-        "exposure",
+        "gross_exposure",
+        "net_exposure",
         "entries",
+        "short_entries",
         "regime_exits",
         "blocked_entries",
     ]
@@ -551,7 +630,8 @@ def write_report(
         "sharpe",
         "cagr",
         "max_drawdown",
-        "exposure",
+        "gross_exposure",
+        "net_exposure",
     ]
 
     best_by_strategy = (
@@ -576,6 +656,7 @@ def write_report(
         "- A known disallowed volatility regime exits an open position and blocks new long entries.",
         "- Missing regime rows block new long entries but do not force-close an existing trade.",
         "- Regime-switch strategies ignore the moving average signal and trade only the selected volatility bucket.",
+        "- Long/short regime strategies are long in selected risk-on regimes and short only in high volatility.",
         "- Annual average return is arithmetic mean daily strategy return multiplied by annualization.",
         "- Sharpe ratio uses zero risk-free rate.",
         "",
